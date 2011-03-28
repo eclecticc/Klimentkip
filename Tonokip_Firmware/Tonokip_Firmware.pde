@@ -65,9 +65,9 @@ bool relative_mode_e = false;  //Determines Absolute or Relative E Codes while i
 #define BUFSIZE 8
 char cmdbuffer[BUFSIZE][MAX_CMD_SIZE];
 bool fromsd[BUFSIZE];
-int bufindr=0;
-int bufindw=0;
-int buflen=0;
+unsigned char bufindr=0;
+unsigned char bufindw=0;
+unsigned char buflen=0;
 int i=0;
 char serial_char;
 int serial_count = 0;
@@ -79,6 +79,8 @@ int target_raw = 0;
 int current_raw;
 int target_bed_raw = 0;
 int current_bed_raw;
+unsigned long last_bed_switch = 0;
+boolean last_bed_state = LOW;
 
 //Inactivity shutdown variables
 unsigned long previous_millis_cmd=0;
@@ -156,6 +158,7 @@ void setup()
   if(E_ENABLE_PIN > -1) pinMode(E_ENABLE_PIN,OUTPUT);
 
   if(HEATER_0_PIN > -1) pinMode(HEATER_0_PIN,OUTPUT);
+  if(HEATER_1_PIN > -1) pinMode(HEATER_1_PIN,OUTPUT);
   
   Serial.begin(BAUDRATE);
  
@@ -176,12 +179,12 @@ void loop()
 	get_command();
   
   if(buflen){
-    //Serial.print("buflen: ");
-    //Serial.print(buflen);
-   //Serial.print(", bufindr: ");
-    //Serial.print(bufindr);
-  //Serial.print(", bufindw: ");
-    //Serial.println(bufindw);
+//    Serial.print("buflen: ");
+//    Serial.print(buflen);
+//    Serial.print(", bufindr: ");
+//    Serial.print(bufindr);
+//    Serial.print(", bufindw: ");
+//    Serial.println(bufindw);
 
     process_commands();
     
@@ -363,10 +366,15 @@ inline void process_commands()
         #define Y_TIME_FOR_MOVE ((float)y_steps_to_take / (y_steps_per_unit*feedrate/60000000))
         #define Z_TIME_FOR_MOVE ((float)z_steps_to_take / (z_steps_per_unit*feedrate/60000000))
         #define E_TIME_FOR_MOVE ((float)e_steps_to_take / (e_steps_per_unit*feedrate/60000000))
+        #define E_TIME_FOR_MOVE2 ((float)e_steps_to_take / (e_steps_per_unit*min(600,feedrate)/60000000))
         
         time_for_move = max(X_TIME_FOR_MOVE,Y_TIME_FOR_MOVE);
         time_for_move = max(time_for_move,Z_TIME_FOR_MOVE);
-        time_for_move = max(time_for_move,E_TIME_FOR_MOVE);
+        if (time_for_move <= 0.0) {
+          time_for_move = max(time_for_move,E_TIME_FOR_MOVE);
+        } else {
+          time_for_move = max(time_for_move,E_TIME_FOR_MOVE2);
+        }
 
         if(x_steps_to_take) x_interval = time_for_move/x_steps_to_take;
         if(y_steps_to_take) y_interval = time_for_move/y_steps_to_take;
@@ -766,14 +774,18 @@ inline void manage_heater()
   current_bed_raw = analogRead(TEMP_1_PIN);                  // If using thermistor, when the heater is colder than targer temp, we get a higher analog reading than target, 
   if(USE_THERMISTOR) current_bed_raw = 1023 - current_bed_raw;   // this switches it up so that the reading appears lower than target for the control logic.
   
-  if(current_bed_raw >= target_bed_raw)
-   {
-     digitalWrite(HEATER_1_PIN,LOW);
-     }
-  else 
-  {
-    digitalWrite(HEATER_1_PIN,HIGH);
-    }
+  unsigned long now = millis();
+  boolean bed_state;
+  
+  if(current_bed_raw >= target_bed_raw) bed_state = LOW;
+  else bed_state = HIGH;
+  
+  // Don't switch more than once a second, since we're using a relay
+  if ((bed_state != last_bed_state) && (now - last_bed_switch > 4000)) {
+    digitalWrite(HEATER_1_PIN, bed_state);
+    last_bed_state = bed_state;
+    last_bed_switch = now;
+  }
 }
 
 // Takes temperature value as input and returns corresponding analog value from RepRap thermistor temp table.
@@ -838,6 +850,7 @@ float analog2temp(int raw) {
 inline void kill(byte debug)
 {
   if(HEATER_0_PIN > -1) digitalWrite(HEATER_0_PIN,LOW);
+  if(HEATER_1_PIN > -1) digitalWrite(HEATER_1_PIN,LOW);
   
   disable_x;
   disable_y;
