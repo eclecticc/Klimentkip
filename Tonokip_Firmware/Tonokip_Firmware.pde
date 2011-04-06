@@ -3,7 +3,7 @@
 
 #include "configuration.h"
 #include "pins.h"
-#include "ThermistorTable.h"
+
 #ifdef SDSUPPORT
 #include "SdFat.h"
 #endif
@@ -59,6 +59,8 @@ float time_for_move;
 long gcode_N, gcode_LastN;
 bool relative_mode = false;  //Determines Absolute or Relative Coordinates
 bool relative_mode_e = false;  //Determines Absolute or Relative E Codes while in Absolute Coordinates mode. E is always relative in Relative Coordinates mode.
+long timediff=0;
+
 
 // comm variables
 #define MAX_CMD_SIZE 256
@@ -82,6 +84,8 @@ int current_bed_raw;
 unsigned long last_bed_switch = 0;
 boolean last_bed_state = LOW;
 
+float tt=0,bt=0;
+
 //Inactivity shutdown variables
 unsigned long previous_millis_cmd=0;
 unsigned long max_inactive_time = 0;
@@ -99,8 +103,9 @@ int16_t n;
 
 void initsd(){
 sdactive=false;
-
-if (!card.init(SPI_HALF_SPEED)){
+if(root.isOpen())
+    root.close();
+if (!card.init(SPI_FULL_SPEED)){
     if (!card.init(SPI_HALF_SPEED))
       Serial.println("SD init fail");
 }
@@ -117,10 +122,9 @@ else
 
 void setup()
 { 
-//cmdbuffer[0]="\0";
-//cmdbuffer[1]="\0";
-//cmdbuffer[2]=char[4];
-//cmdbuffer[3]=char[4];
+  Serial.begin(BAUDRATE);
+  Serial.println("start");
+
   for(int i=0;i<BUFSIZE;i++){
       fromsd[i]=false;
   }
@@ -160,13 +164,15 @@ void setup()
   if(HEATER_0_PIN > -1) pinMode(HEATER_0_PIN,OUTPUT);
   if(HEATER_1_PIN > -1) pinMode(HEATER_1_PIN,OUTPUT);
   
-  Serial.begin(BAUDRATE);
  
 #ifdef SDSUPPORT
+
+//power to SD reader
+pinMode(48,OUTPUT); 
+digitalWrite(48,HIGH);
 initsd();
 #endif
  
-  Serial.println("start");
   
 }
 
@@ -179,18 +185,10 @@ void loop()
 	get_command();
   
   if(buflen){
-//    Serial.print("buflen: ");
-//    Serial.print(buflen);
-//    Serial.print(", bufindr: ");
-//    Serial.print(bufindr);
-//    Serial.print(", bufindw: ");
-//    Serial.println(bufindw);
-
     process_commands();
     
     buflen=(buflen-1);
     bufindr=(bufindr+1)%BUFSIZE;
-    //Serial.println("ok");
     }
   
   manage_heater();
@@ -208,7 +206,6 @@ inline void get_command()
     {
       if(!serial_count) return; //if empty line
       cmdbuffer[bufindw][serial_count] = 0; //terminate string
-      //Serial.println(cmdbuffer[bufindw]);
       if(!comment_mode){
     fromsd[bufindw]=false;
   if(strstr(cmdbuffer[bufindw], "N") != NULL)
@@ -275,15 +272,8 @@ inline void get_command()
 		}
 
 	}
-    
-    
-	
         bufindw=(bufindw+1)%BUFSIZE;
         buflen+=1;
-        //Serial.print("Received: ");
-        //Serial.println(gcode_LastN);
-        //Serial.print("Buflen: ");
-        //Serial.println(buflen);
         
       }
       comment_mode = false; //for new command
@@ -311,14 +301,9 @@ if(!sdmode || serial_count!=0){
         }
       if(!serial_count) return; //if empty line
       cmdbuffer[bufindw][serial_count] = 0; //terminate string
-      //Serial.println(cmdbuffer[bufindw]);
       if(!comment_mode){
         fromsd[bufindw]=true;
         buflen+=1;
-        //Serial.print("Received: ");
-         //   Serial.println(cmdbuffer[bufindw]);
-           // Serial.print("Buflen: ");
-            //Serial.println(buflen);
         bufindw=(bufindw+1)%BUFSIZE;
       }
       comment_mode = false; //for new command
@@ -344,8 +329,9 @@ inline bool code_seen(char code)
   strchr_pointer = strchr(cmdbuffer[bufindr], code);
   return (strchr_pointer != NULL);  //Return True if a character was found
 }
-
-
+ //experimental feedrate calc
+float d=0;
+float xdiff=0,ydiff=0,zdiff=0,ediff=0;
 
 inline void process_commands()
 {
@@ -357,11 +343,33 @@ inline void process_commands()
       case 0: // G0 -> G1
       case 1: // G1
         get_coordinates(); // For X Y Z E F
-        x_steps_to_take = abs(destination_x - current_x)*x_steps_per_unit;
-        y_steps_to_take = abs(destination_y - current_y)*y_steps_per_unit;
-        z_steps_to_take = abs(destination_z - current_z)*z_steps_per_unit;
-        e_steps_to_take = abs(destination_e - current_e)*e_steps_per_unit;
-
+        xdiff=(destination_x - current_x);
+        ydiff=(destination_y - current_y);
+        zdiff=(destination_z - current_z);
+        ediff=(destination_e - current_e);
+        x_steps_to_take = abs(xdiff)*x_steps_per_unit;
+        y_steps_to_take = abs(ydiff)*y_steps_per_unit;
+        z_steps_to_take = abs(zdiff)*z_steps_per_unit;
+        e_steps_to_take = abs(ediff)*e_steps_per_unit;
+        if(feedrate<10)
+            feedrate=10;
+        /*//experimental feedrate calc
+        if(abs(xdiff)>0.1 && abs(ydiff)>0.1)
+            d=sqrt(xdiff*xdiff+ydiff*ydiff);
+        else if(abs(xdiff)>0.1)
+            d=abs(xdiff);
+        else if(abs(ydiff)>0.1)
+            d=abs(ydiff);
+        else if(abs(zdiff)>0.05)
+            d=abs(zdiff);
+        else if(abs(ediff)>0.1)
+            d=abs(ediff);
+        else d=1; //extremely slow move, should be okay for moves under 0.1mm
+        time_for_move=(xdiff/(feedrate/60000000));
+        //time=60000000*dist/feedrate
+        //int feedz=(60000000*zdiff)/time_for_move;
+        //if(feedz>maxfeed)
+        */
         #define X_TIME_FOR_MOVE ((float)x_steps_to_take / (x_steps_per_unit*feedrate/60000000))
         #define Y_TIME_FOR_MOVE ((float)y_steps_to_take / (y_steps_per_unit*feedrate/60000000))
         #define Z_TIME_FOR_MOVE ((float)z_steps_to_take / (z_steps_per_unit*feedrate/60000000))
@@ -370,16 +378,12 @@ inline void process_commands()
         
         time_for_move = max(X_TIME_FOR_MOVE,Y_TIME_FOR_MOVE);
         time_for_move = max(time_for_move,Z_TIME_FOR_MOVE);
-        if (time_for_move <= 0.0) {
-          time_for_move = max(time_for_move,E_TIME_FOR_MOVE);
-        } else {
-          time_for_move = max(time_for_move,E_TIME_FOR_MOVE2);
-        }
+        if(time_for_move <= 0) time_for_move = max(time_for_move,E_TIME_FOR_MOVE);
 
         if(x_steps_to_take) x_interval = time_for_move/x_steps_to_take;
         if(y_steps_to_take) y_interval = time_for_move/y_steps_to_take;
         if(z_steps_to_take) z_interval = time_for_move/z_steps_to_take;
-        if(e_steps_to_take) e_interval = time_for_move/e_steps_to_take;
+        if(e_steps_to_take && (x_steps_to_take + y_steps_to_take <= 0)) e_interval = time_for_move/e_steps_to_take;
         
         //#define DEBUGGING false
 	#if 0        
@@ -469,12 +473,7 @@ inline void process_commands()
                 Serial.println(file.fileSize());
                 sdpos=0;
                 filesize=file.fileSize();
-                //int i=0;
-                //while ((n = file.read(buf, sizeof(buf))) > 0) {
-                //    for (uint8_t i = 0; i < n; i++) Serial.print(buf[i]);
-                //}
                 Serial.println("File selected");
-                //file.close();
             }
             else{
                 Serial.println("file.open failed");
@@ -512,17 +511,19 @@ inline void process_commands()
         if (code_seen('S')) target_raw = temp2analog(code_value());
         break;
       case 140: // M140 set bed temp
-        if (code_seen('S')) target_bed_raw = temp2analog(code_value());
+        if (code_seen('S')) target_bed_raw = temp2analogBed(code_value());
         break;
       case 105: // M105
+        tt=analog2temp(analogRead(TEMP_0_PIN));
+        bt=analog2tempBed(analogRead(TEMP_1_PIN));
         Serial.print("T:");
-        Serial.println( analog2temp(analogRead(TEMP_0_PIN)) ); 
-        Serial.print("Bed:");
-        Serial.println( analog2temp(analogRead(TEMP_1_PIN)) ); 
-        if(!code_seen('N')) {
-            return;  // If M105 is sent from generated gcode, then it needs a response.
-        }
-        break;
+        Serial.println(tt); 
+        Serial.print("ok T:");
+        Serial.print(tt); 
+        Serial.print(" B:");
+        Serial.println(bt); 
+        return;
+        //break;
       case 109: // M109 - Wait for heater to reach target.
         if (code_seen('S')) target_raw = temp2analog(code_value());
         previous_millis_heater = millis(); 
@@ -661,35 +662,111 @@ void linear_move(unsigned long x_steps_remaining, unsigned long y_steps_remainin
   //Only enable axis that are moving. If the axis doesn't need to move then it can stay disabled depending on configuration.
   if(x_steps_remaining) enable_x();
   if(y_steps_remaining) enable_y();
-  if(z_steps_remaining) enable_z();
-  if(e_steps_remaining) enable_e();
+  if(z_steps_remaining) { enable_z(); do_z_step(); z_steps_remaining--;}
+  if(e_steps_remaining) {enable_e(); do_e_step(); e_steps_remaining--;}
 
   if(X_MIN_PIN > -1) if(!direction_x) if(digitalRead(X_MIN_PIN) != ENDSTOPS_INVERTING) x_steps_remaining=0;
   if(Y_MIN_PIN > -1) if(!direction_y) if(digitalRead(Y_MIN_PIN) != ENDSTOPS_INVERTING) y_steps_remaining=0;
   if(Z_MIN_PIN > -1) if(!direction_z) if(digitalRead(Z_MIN_PIN) != ENDSTOPS_INVERTING) z_steps_remaining=0;
+  if(X_MAX_PIN > -1) if(direction_x) if(digitalRead(X_MAX_PIN) != ENDSTOPS_INVERTING) x_steps_remaining=0;
+  if(Y_MAX_PIN > -1) if(direction_y) if(digitalRead(Y_MAX_PIN) != ENDSTOPS_INVERTING) y_steps_remaining=0;
+  if(Z_MAX_PIN > -1) if(direction_z) if(digitalRead(Z_MAX_PIN) != ENDSTOPS_INVERTING) z_steps_remaining=0;
   
   previous_millis_heater = millis();
-
-  //while(x_steps_remaining > 0 || y_steps_remaining > 0 || z_steps_remaining > 0 || e_steps_remaining > 0) // move until no more steps remain
-  while(x_steps_remaining + y_steps_remaining + z_steps_remaining + e_steps_remaining > 0) // move until no more steps remain
-  { 
-    if(x_steps_remaining) {
-      if ((micros()-previous_micros_x) >= x_interval) { do_x_step(); x_steps_remaining--; }
-      if(X_MIN_PIN > -1) if(!direction_x) if(digitalRead(X_MIN_PIN) != ENDSTOPS_INVERTING) x_steps_remaining=0;
+  
+  unsigned long start_move_micros = micros(); 
+  unsigned int delta_x = x_steps_remaining;
+  unsigned long x_interval_nanos;
+  unsigned int delta_y = y_steps_remaining;
+  unsigned long y_interval_nanos;
+  unsigned int delta_z = z_steps_remaining;
+  unsigned long z_interval_nanos;
+  float interval;
+  boolean steep_y = delta_y > delta_x;// && delta_y > delta_e && delta_y > delta_z;
+  boolean steep_x = delta_x >= delta_y;// && delta_x > delta_e && delta_x > delta_z;
+  //boolean steep_z = delta_z > delta_x && delta_z > delta_y && delta_z > delta_e;
+  int error_x;
+  int error_y;
+  int error_z;
+  float full_velocity_units = 0.3;
+  unsigned long full_velocity_steps;
+  
+  if(steep_y) {
+   error_x = delta_y / 2;
+   previous_micros_y=micros();
+   interval = y_interval;
+   full_velocity_steps = full_velocity_units * y_steps_per_unit;
+   if (full_velocity_steps > y_steps_remaining) full_velocity_steps = y_steps_remaining;
+  } else if (steep_x) {
+   error_y = delta_x / 2;
+   previous_micros_x=micros();
+   interval = x_interval;
+   full_velocity_steps = full_velocity_units * x_steps_per_unit;
+   if (full_velocity_steps > x_steps_remaining) full_velocity_steps = x_steps_remaining;
+  }
+  float full_interval = interval;
+  unsigned long steps_done = 0;
+  unsigned int steps_acceleration_check = 100;
+  
+  // move until no more steps remain 
+  while(x_steps_remaining + y_steps_remaining + z_steps_remaining + e_steps_remaining > 0) { 
+    if (steps_done < full_velocity_steps && steps_done / full_velocity_steps < 1 && (steps_done % steps_acceleration_check == 0)) {
+      if(steps_done == 0) {
+        interval = full_interval * steps_acceleration_check / full_velocity_steps;
+      } else {
+        interval = full_interval * steps_done / full_velocity_steps;
+      }
+    } else if (steps_done - full_velocity_steps >= 1) {
+      interval = full_interval;
     }
-    
-    if(y_steps_remaining) {
-      if ((micros()-previous_micros_y) >= y_interval) { do_y_step(); y_steps_remaining--; }
+    steps_done++;
+      
+    if(x_steps_remaining || y_steps_remaining) {
+      if(X_MIN_PIN > -1) if(!direction_x) if(digitalRead(X_MIN_PIN) != ENDSTOPS_INVERTING) x_steps_remaining=0;
       if(Y_MIN_PIN > -1) if(!direction_y) if(digitalRead(Y_MIN_PIN) != ENDSTOPS_INVERTING) y_steps_remaining=0;
+      if(X_MAX_PIN > -1) if(direction_x) if(digitalRead(X_MAX_PIN) != ENDSTOPS_INVERTING) x_steps_remaining=0;
+      if(Y_MAX_PIN > -1) if(direction_y) if(digitalRead(Y_MAX_PIN) != ENDSTOPS_INVERTING) y_steps_remaining=0;
+      if(steep_y) {
+        timediff = micros() - previous_micros_y;
+        while(timediff >= interval) {
+          y_steps_remaining--; timediff-=interval;
+          error_x = error_x - delta_x;
+          do_y_step();
+          if(error_x < 0) {
+            do_x_step(); x_steps_remaining--;
+            error_x = error_x + delta_y;
+          }
+        }
+      } else if (steep_x) {
+        timediff=micros() - previous_micros_x;
+        while(timediff >= interval) {
+          x_steps_remaining--; timediff-=interval;
+          error_y = error_y - delta_y;
+          do_x_step();
+          if(error_y < 0) { 
+            do_y_step(); y_steps_remaining--;
+            error_y = error_y + delta_x;
+          }
+        }
+      }
     }
     
     if(z_steps_remaining) {
-      if ((micros()-previous_micros_z) >= z_interval) { do_z_step(); z_steps_remaining--; }
       if(Z_MIN_PIN > -1) if(!direction_z) if(digitalRead(Z_MIN_PIN) != ENDSTOPS_INVERTING) z_steps_remaining=0;
+      if(Z_MAX_PIN > -1) if(direction_z) if(digitalRead(Z_MAX_PIN) != ENDSTOPS_INVERTING) z_steps_remaining=0;
+      timediff=micros()-previous_micros_z;
+      while(timediff >= z_interval && z_steps_remaining) { do_z_step(); z_steps_remaining--; timediff-=z_interval;}
     }    
     
-    if(e_steps_remaining) if ((micros()-previous_micros_e) >= e_interval) { do_e_step(); e_steps_remaining--; }
-    
+    if(e_steps_remaining){
+      if (x_steps_to_take + y_steps_to_take <= 0) timediff=micros()-previous_micros_e;
+      unsigned int final_e_steps_remaining = 0;
+      if (steep_x && x_steps_to_take > 0) final_e_steps_remaining = e_steps_to_take * x_steps_remaining / x_steps_to_take;
+      else if (steep_y && y_steps_to_take > 0) final_e_steps_remaining = e_steps_to_take * y_steps_remaining / y_steps_to_take;
+      if (final_e_steps_remaining > 0)  while(e_steps_remaining > final_e_steps_remaining) { do_e_step(); e_steps_remaining--;}
+      else if (x_steps_to_take + y_steps_to_take > 0)  while(e_steps_remaining) { do_e_step(); e_steps_remaining--;}
+      else while (timediff >= e_interval && e_steps_remaining) { do_e_step(); e_steps_remaining--; timediff-=e_interval;}
+    }
     if( (millis() - previous_millis_heater) >= 500 ) {
       manage_heater();
       previous_millis_heater = millis();
@@ -788,7 +865,7 @@ inline void manage_heater()
   }
 }
 
-// Takes temperature value as input and returns corresponding analog value from RepRap thermistor temp table.
+// Takes hot end temperature value as input and returns corresponding analog value from RepRap thermistor temp table.
 // This is needed because PID in hydra firmware hovers around a given analog value, not a temp value.
 // This function is derived from inversing the logic from a portion of getTemperature() in FiveD RepRap firmware.
 float temp2analog(int celsius) {
@@ -818,7 +895,38 @@ float temp2analog(int celsius) {
   }
 }
 
+// Takes bed temperature value as input and returns corresponding analog value from RepRap thermistor temp table.
+// This is needed because PID in hydra firmware hovers around a given analog value, not a temp value.
+// This function is derived from inversing the logic from a portion of getTemperature() in FiveD RepRap firmware.
+float temp2analogBed(int celsius) {
+  if(USE_THERMISTOR) {
+    int raw = 0;
+    byte i;
+    
+    for (i=1; i<BNUMTEMPS; i++)
+    {
+      if (bedtemptable[i][1] < celsius)
+      {
+        raw = bedtemptable[i-1][0] + 
+          (celsius - bedtemptable[i-1][1]) * 
+          (bedtemptable[i][0] - bedtemptable[i-1][0]) /
+          (bedtemptable[i][1] - bedtemptable[i-1][1]);
+      
+        break;
+      }
+    }
+
+    // Overflow: Set to last value in the table
+    if (i == BNUMTEMPS) raw = bedtemptable[i-1][0];
+
+    return 1023 - raw;
+  } else {
+    return celsius * (1024.0/(5.0*100.0));
+  }
+}
+
 // Derived from RepRap FiveD extruder::getTemperature()
+// For hot end thermistor.
 float analog2temp(int raw) {
   if(USE_THERMISTOR) {
     int celsius = 0;
@@ -839,6 +947,36 @@ float analog2temp(int raw) {
 
     // Overflow: Set to last value in the table
     if (i == NUMTEMPS) celsius = temptable[i-1][1];
+
+    return celsius;
+    
+  } else {
+    return raw * ((5.0*100.0)/1024.0);
+  }
+}
+
+// Derived from RepRap FiveD extruder::getTemperature()
+// For bed thermistor.
+float analog2tempBed(int raw) {
+  if(USE_THERMISTOR) {
+    int celsius = 0;
+    byte i;
+
+    for (i=1; i<NUMTEMPS; i++)
+    {
+      if (bedtemptable[i][0] > raw)
+      {
+        celsius  = bedtemptable[i-1][1] + 
+          (raw - bedtemptable[i-1][0]) * 
+          (bedtemptable[i][1] - bedtemptable[i-1][1]) /
+          (bedtemptable[i][0] - bedtemptable[i-1][0]);
+
+        break;
+      }
+    }
+
+    // Overflow: Set to last value in the table
+    if (i == NUMTEMPS) celsius = bedtemptable[i-1][1];
 
     return celsius;
     

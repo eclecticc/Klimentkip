@@ -4,6 +4,8 @@
 // NO RS485/EXTRUDER CONTROLLER SUPPORT
 // PLEASE VERIFY PIN ASSIGNMENTS FOR YOUR CONFIGURATION!!!!!!!
 #define MOTHERBOARD 3 // ATMEGA168 0, SANGUINO 1, MOTHERBOARD = 2, MEGA 3, ATMEGA328 4
+
+//Comment out to disable SD support
 //#define SDSUPPORT 1
 
 // THERMOCOUPLE SUPPORT UNTESTED... USE WITH CAUTION!!!!
@@ -47,6 +49,22 @@ const bool INVERT_Y_DIR = true;
 const bool INVERT_Z_DIR = true;
 const bool INVERT_E_DIR = false;
 
+//Thermistor settings:
+
+//Uncomment for 100k thermistor
+//#include "ThermistorTable_100k.h"
+//#include "BedThermistorTable_100k.h"
+
+//Uncomment for 200k thermistor
+//#include "ThermistorTable_200k.h"
+//#include "BedThermistorTable_200k.h"
+
+//Identical thermistors on heater and bed:
+#include "ThermistorTable_200k.h"
+//#include "ThermistorTable_100k.h"
+#define BNUMTEMPS NUMTEMPS
+#define bedtemptable temptable
+
 //Endstop Settings
 //#define ENDSTOPPULLUPS 1
 const bool ENDSTOPS_INVERTING = true;
@@ -57,5 +75,7 @@ const int Y_MAX_LENGTH = 200;
 const int Z_MAX_LENGTH = 120;
 
 #define BAUDRATE 115200
+
+
 
 #endif
