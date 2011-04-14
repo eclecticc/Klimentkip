@@ -9,8 +9,8 @@
 //#define SDSUPPORT 1
 
 //Acceleration settings
-float full_velocity_units = 2.0; // the units between minimum and G1 move feedrate
-float min_units_per_second = 40.0; // the minimum feedrate
+float full_velocity_units = 1.5; // the units between minimum and G1 move feedrate
+float min_units_per_second = 30.0; // the minimum feedrate
 
 // THERMOCOUPLE SUPPORT UNTESTED... USE WITH CAUTION!!!!
 const bool USE_THERMISTOR = true; //Set to false if using thermocouple
@@ -25,7 +25,7 @@ const bool USE_THERMISTOR = true; //Set to false if using thermocouple
 //Calibration variables
 float x_steps_per_unit = 80.0/MICROSTEP_BY;	//64 for 10 tooth 5mm pulleys
 float y_steps_per_unit = 80.0/MICROSTEP_BY;	
-float z_steps_per_unit = 6667.0/MICROSTEP_BY;	
+float z_steps_per_unit = 6700.0/MICROSTEP_BY;	
 //float e_steps_per_unit = 36.7;	//17.6 for adrians 36.7 for MakerGear extruder 14-17 for wades(Varies based on hobbing) ****these are all calculated for 16x microstepping
 float e_steps_per_unit = 365.0; //((4.0*200.0*13.0)/(math.pi*12.0))  //*((0.35/1.75)**2)
 float max_feedrate = 18000;
@@ -45,7 +45,7 @@ const bool E_ENABLE_ON = 0;
 //Disables axis when it's not being used. Z is the only one recommended to disable.
 const bool DISABLE_X = false;
 const bool DISABLE_Y = false;
-const bool DISABLE_Z = true;
+const bool DISABLE_Z = false;
 const bool DISABLE_E = false;
 
 const bool INVERT_X_DIR = false;
