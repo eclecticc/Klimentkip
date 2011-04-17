@@ -998,17 +998,16 @@ inline void manage_heater()
   current_bed_raw = analogRead(TEMP_1_PIN);                  // If using thermistor, when the heater is colder than targer temp, we get a higher analog reading than target, 
   if(USE_THERMISTOR) current_bed_raw = 1023 - current_bed_raw;   // this switches it up so that the reading appears lower than target for the control logic.
   
-  unsigned long now = millis();
   boolean bed_state;
   
   if(current_bed_raw >= target_bed_raw) bed_state = LOW;
   else bed_state = HIGH;
   
   // Don't switch more than once a second, since we're using a relay
-  if ((bed_state != last_bed_state) && (now - last_bed_switch > 4000)) {
+  if ((bed_state != last_bed_state) && (previous_millis_bed_heater - last_bed_switch > 5000)) {
     digitalWrite(HEATER_1_PIN, bed_state);
     last_bed_state = bed_state;
-    last_bed_switch = now;
+    last_bed_switch = previous_millis_bed_heater;
   }
     #endif
 }
