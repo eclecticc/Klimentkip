@@ -72,9 +72,9 @@ long timediff=0;
 #define BUFSIZE 8
 char cmdbuffer[BUFSIZE][MAX_CMD_SIZE];
 bool fromsd[BUFSIZE];
-unsigned char bufindr=0;
-unsigned char bufindw=0;
-unsigned char buflen=0;
+int bufindr=0;
+int bufindw=0;
+int buflen=0;
 int i=0;
 char serial_char;
 int serial_count = 0;
@@ -86,9 +86,6 @@ int target_raw = 0;
 int current_raw;
 int target_bed_raw = 0;
 int current_bed_raw;
-unsigned long last_bed_switch = 0;
-boolean last_bed_state = LOW;
-
 float tt=0,bt=0;
 #ifdef PIDTEMP
 int temp_iState=0;
@@ -202,7 +199,6 @@ void setup()
   if(E_ENABLE_PIN > -1) pinMode(E_ENABLE_PIN,OUTPUT);
 
   if(HEATER_0_PIN > -1) pinMode(HEATER_0_PIN,OUTPUT);
-  if(HEATER_1_PIN > -1) pinMode(HEATER_1_PIN,OUTPUT);
   
  
 #ifdef SDSUPPORT
@@ -435,7 +431,6 @@ inline void process_commands()
         #define Y_TIME_FOR_MOVE ((float)y_steps_to_take / (y_steps_per_unit*feedrate/60000000))
         #define Z_TIME_FOR_MOVE ((float)z_steps_to_take / (z_steps_per_unit*feedrate/60000000))
         #define E_TIME_FOR_MOVE ((float)e_steps_to_take / (e_steps_per_unit*feedrate/60000000))
-        #define E_TIME_FOR_MOVE2 ((float)e_steps_to_take / (e_steps_per_unit*min(600,feedrate)/60000000))
         
         time_for_move = max(X_TIME_FOR_MOVE,Y_TIME_FOR_MOVE);
         time_for_move = max(time_for_move,Z_TIME_FOR_MOVE);
@@ -998,17 +993,14 @@ inline void manage_heater()
   current_bed_raw = analogRead(TEMP_1_PIN);                  // If using thermistor, when the heater is colder than targer temp, we get a higher analog reading than target, 
   if(USE_THERMISTOR) current_bed_raw = 1023 - current_bed_raw;   // this switches it up so that the reading appears lower than target for the control logic.
   
-  boolean bed_state;
-  
-  if(current_bed_raw >= target_bed_raw) bed_state = LOW;
-  else bed_state = HIGH;
-  
-  // Don't switch more than once a second, since we're using a relay
-  if ((bed_state != last_bed_state) && (previous_millis_bed_heater - last_bed_switch > 5000)) {
-    digitalWrite(HEATER_1_PIN, bed_state);
-    last_bed_state = bed_state;
-    last_bed_switch = previous_millis_bed_heater;
-  }
+  if(current_bed_raw >= target_bed_raw)
+   {
+     digitalWrite(HEATER_1_PIN,LOW);
+     }
+  else 
+  {
+    digitalWrite(HEATER_1_PIN,HIGH);
+    }
     #endif
 }
 
