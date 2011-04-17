@@ -49,7 +49,7 @@
 
 //Stepper Movement Variables
 bool direction_x, direction_y, direction_z, direction_e;
-unsigned long previous_micros=0, previous_micros_x=0, previous_micros_y=0, previous_micros_z=0, previous_micros_e=0, previous_millis_heater;
+unsigned long previous_micros=0, previous_micros_x=0, previous_micros_y=0, previous_micros_z=0, previous_micros_e=0, previous_millis_heater, previous_millis_bed_heater;
 unsigned long x_steps_to_take, y_steps_to_take, z_steps_to_take, e_steps_to_take;
 unsigned long long_full_velocity_units = full_velocity_units * 100;
 unsigned long max_x_interval = 1000000.0 / (min_units_per_second * x_steps_per_unit);
@@ -90,7 +90,19 @@ unsigned long last_bed_switch = 0;
 boolean last_bed_state = LOW;
 
 float tt=0,bt=0;
+#ifdef PIDTEMP
+int temp_iState=0;
+int temp_dState=0;
+int pTerm;
+int iTerm;
+int dTerm;
+    //int output;
+int error;
+int temp_iState_min = 100*-PID_INTEGRAL_DRIVE_MAX/PID_IGAIN;
+int temp_iState_max = 100*PID_INTEGRAL_DRIVE_MAX/PID_IGAIN;
+#endif
 
+        
 //Inactivity shutdown variables
 unsigned long previous_millis_cmd=0;
 unsigned long max_inactive_time = 0;
@@ -109,10 +121,11 @@ int16_t n;
 
 void initsd(){
 sdactive=false;
+#if SDSS>-1
 if(root.isOpen())
     root.close();
-if (!card.init(SPI_FULL_SPEED)){
-    if (!card.init(SPI_HALF_SPEED))
+if (!card.init(SPI_FULL_SPEED,SDSS)){
+    if (!card.init(SPI_HALF_SPEED,SDSS))
       Serial.println("SD init fail");
 }
 else if (!volume.init(&card))
@@ -121,7 +134,7 @@ else if (!root.openRoot(&volume))
       Serial.println("openRoot failed");
 else 
         sdactive=true;
-
+#endif
 }
 
 inline void write_command(char *buf){
@@ -195,9 +208,12 @@ void setup()
 #ifdef SDSUPPORT
 
 //power to SD reader
-pinMode(48,OUTPUT); 
-digitalWrite(48,HIGH);
+#if SDPOWER > -1
+pinMode(SDPOWER,OUTPUT); 
+digitalWrite(SDPOWER,HIGH);
+#endif
 initsd();
+
 #endif
  
   
@@ -513,7 +529,7 @@ inline void process_commands()
             file.close();
             starpos=(strchr(strchr_pointer+4,'*'));
             if(starpos!=NULL)
-                *starpos='\0';
+                *(starpos-1)='\0';
             if (file.open(&root, strchr_pointer+4, O_READ)) {
                 Serial.print("File opened:");
                 Serial.print(strchr_pointer+4);
@@ -554,14 +570,18 @@ inline void process_commands()
             Serial.println("Not SD printing");
         }
         break;
-      case 28: //M28 - Start SD write
+            case 28: //M28 - Start SD write
         if(sdactive){
+          char* npos=0;
             file.close();
             sdmode=false;
             starpos=(strchr(strchr_pointer+4,'*'));
-            if(starpos!=NULL)
-                *starpos='\0';
-            if (!file.open(&root, strchr_pointer+4, O_CREAT | O_APPEND | O_WRITE | O_TRUNC))
+            if(starpos!=NULL){
+              npos=strchr(cmdbuffer[bufindr], 'N');
+              strchr_pointer = strchr(npos,' ')+1;
+              *(starpos-1)='\0';
+            }
+      if (!file.open(&root, strchr_pointer+4, O_CREAT | O_APPEND | O_WRITE | O_TRUNC))
             {
             Serial.print("open failed, File: ");
             Serial.print(strchr_pointer+4);
@@ -585,14 +605,26 @@ inline void process_commands()
         if (code_seen('S')) target_bed_raw = temp2analogBed(code_value());
         break;
       case 105: // M105
+        #if TEMP_0_PIN>-1
         tt=analog2temp(analogRead(TEMP_0_PIN));
+        #endif
+        #if TEMP_1_PIN>-1
         bt=analog2tempBed(analogRead(TEMP_1_PIN));
+        #endif
+        #if TEMP_0_PIN>-1
+        
         Serial.print("T:");
         Serial.println(tt); 
+        #if TEMP_1_PIN>-1
+        
         Serial.print("ok T:");
         Serial.print(tt); 
         Serial.print(" B:");
         Serial.println(bt); 
+        #endif
+        #else
+        Serial.println("No thermistors - no temp");
+        #endif
         return;
         //break;
       case 109: // M109 - Wait for heater to reach target.
@@ -730,18 +762,20 @@ void linear_move(unsigned long x_steps_remaining, unsigned long y_steps_remainin
   if (destination_e > current_e) digitalWrite(E_DIR_PIN,!INVERT_E_DIR);
   else digitalWrite(E_DIR_PIN,INVERT_E_DIR);
   
-  //Only enable axis that are moving. If the axis doesn't need to move then it can stay disabled depending on configuration.
-  if(x_steps_remaining) enable_x();
-  if(y_steps_remaining) enable_y();
-  if(z_steps_remaining) { enable_z(); do_z_step(); z_steps_remaining--;}
-  if(e_steps_remaining) {enable_e(); do_e_step(); e_steps_remaining--;}
-
   if(X_MIN_PIN > -1) if(!direction_x) if(digitalRead(X_MIN_PIN) != ENDSTOPS_INVERTING) x_steps_remaining=0;
   if(Y_MIN_PIN > -1) if(!direction_y) if(digitalRead(Y_MIN_PIN) != ENDSTOPS_INVERTING) y_steps_remaining=0;
   if(Z_MIN_PIN > -1) if(!direction_z) if(digitalRead(Z_MIN_PIN) != ENDSTOPS_INVERTING) z_steps_remaining=0;
   if(X_MAX_PIN > -1) if(direction_x) if(digitalRead(X_MAX_PIN) != ENDSTOPS_INVERTING) x_steps_remaining=0;
   if(Y_MAX_PIN > -1) if(direction_y) if(digitalRead(Y_MAX_PIN) != ENDSTOPS_INVERTING) y_steps_remaining=0;
   if(Z_MAX_PIN > -1) if(direction_z) if(digitalRead(Z_MAX_PIN) != ENDSTOPS_INVERTING) z_steps_remaining=0;
+  
+  
+  //Only enable axis that are moving. If the axis doesn't need to move then it can stay disabled depending on configuration.
+  if(x_steps_remaining) enable_x();
+  if(y_steps_remaining) enable_y();
+  if(z_steps_remaining) { enable_z(); do_z_step(); z_steps_remaining--;}
+  if(e_steps_remaining) {enable_e(); do_e_step(); e_steps_remaining--;}
+
   
   previous_millis_heater = millis();
   
@@ -785,7 +819,7 @@ void linear_move(unsigned long x_steps_remaining, unsigned long y_steps_remainin
   }
   acceleration_enabled = true;
   if(full_velocity_steps == 0) full_velocity_steps++;
-  long full_interval = max(interval, max_interval - ((max_interval - full_interval) * full_velocity_steps / virtual_full_velocity_steps));
+  long full_interval = interval;//max(interval, max_interval - ((max_interval - full_interval) * full_velocity_steps / virtual_full_velocity_steps));
   if(interval > max_interval) acceleration_enabled = false;
   unsigned long steps_done = 0;
   unsigned int steps_acceleration_check = 1;
@@ -812,10 +846,10 @@ void linear_move(unsigned long x_steps_remaining, unsigned long y_steps_remainin
     
       
     if(x_steps_remaining || y_steps_remaining) {
-      if(X_MIN_PIN > -1) if(!direction_x) if(digitalRead(X_MIN_PIN) != ENDSTOPS_INVERTING) x_steps_remaining=0;
-      if(Y_MIN_PIN > -1) if(!direction_y) if(digitalRead(Y_MIN_PIN) != ENDSTOPS_INVERTING) y_steps_remaining=0;
-      if(X_MAX_PIN > -1) if(direction_x) if(digitalRead(X_MAX_PIN) != ENDSTOPS_INVERTING) x_steps_remaining=0;
-      if(Y_MAX_PIN > -1) if(direction_y) if(digitalRead(Y_MAX_PIN) != ENDSTOPS_INVERTING) y_steps_remaining=0;
+      if(X_MIN_PIN > -1) if(!direction_x) if(digitalRead(X_MIN_PIN) != ENDSTOPS_INVERTING) break;
+      if(Y_MIN_PIN > -1) if(!direction_y) if(digitalRead(Y_MIN_PIN) != ENDSTOPS_INVERTING) break;
+      if(X_MAX_PIN > -1) if(direction_x) if(digitalRead(X_MAX_PIN) != ENDSTOPS_INVERTING) break;
+      if(Y_MAX_PIN > -1) if(direction_y) if(digitalRead(Y_MAX_PIN) != ENDSTOPS_INVERTING) break;
       if(steep_y) {
         timediff = micros() - previous_micros_y;
         while(timediff >= interval && y_steps_remaining>0) {
@@ -846,8 +880,8 @@ void linear_move(unsigned long x_steps_remaining, unsigned long y_steps_remainin
     }
     
     if(z_steps_remaining) {
-      if(Z_MIN_PIN > -1) if(!direction_z) if(digitalRead(Z_MIN_PIN) != ENDSTOPS_INVERTING) z_steps_remaining=0;
-      if(Z_MAX_PIN > -1) if(direction_z) if(digitalRead(Z_MAX_PIN) != ENDSTOPS_INVERTING) z_steps_remaining=0;
+      if(Z_MIN_PIN > -1) if(!direction_z) if(digitalRead(Z_MIN_PIN) != ENDSTOPS_INVERTING) break;
+      if(Z_MAX_PIN > -1) if(direction_z) if(digitalRead(Z_MAX_PIN) != ENDSTOPS_INVERTING) break;
       timediff=micros()-previous_micros_z;
       while(timediff >= z_interval && z_steps_remaining) { do_z_step(); z_steps_remaining--; timediff-=z_interval;}
     }    
@@ -929,9 +963,21 @@ inline void  enable_e() { if(E_ENABLE_PIN > -1) digitalWrite(E_ENABLE_PIN, E_ENA
 
 inline void manage_heater()
 {
+  #if TEMP_0_PIN > -1
   current_raw = analogRead(TEMP_0_PIN);                  // If using thermistor, when the heater is colder than targer temp, we get a higher analog reading than target, 
   if(USE_THERMISTOR) current_raw = 1023 - current_raw;   // this switches it up so that the reading appears lower than target for the control logic.
   
+  #ifdef PIDTEMP
+    error = target_raw - current_raw;
+    pTerm = (PID_PGAIN * error)/100;
+    temp_iState += error;
+    temp_iState = constrain(temp_iState, temp_iState_min, temp_iState_max);
+    iTerm = (PID_IGAIN * temp_iState) /100;
+    dTerm = (PID_DGAIN * (current_raw - temp_dState))/100;
+    temp_dState = current_raw;
+    analogWrite(HEATER_0_PIN, constrain(pTerm + iTerm - dTerm, 0, PID_MAX));
+
+  #else
   if(current_raw >= target_raw)
    {
      digitalWrite(HEATER_0_PIN,LOW);
@@ -942,6 +988,13 @@ inline void manage_heater()
     digitalWrite(HEATER_0_PIN,HIGH);
     digitalWrite(LED_PIN,HIGH);
   }
+  #endif
+  #endif
+  if(millis()-previous_millis_bed_heater<5000)
+    return;
+  previous_millis_bed_heater = millis();
+  
+    #if TEMP_1_PIN > -1
   current_bed_raw = analogRead(TEMP_1_PIN);                  // If using thermistor, when the heater is colder than targer temp, we get a higher analog reading than target, 
   if(USE_THERMISTOR) current_bed_raw = 1023 - current_bed_raw;   // this switches it up so that the reading appears lower than target for the control logic.
   
@@ -957,6 +1010,7 @@ inline void manage_heater()
     last_bed_state = bed_state;
     last_bed_switch = now;
   }
+    #endif
 }
 
 // Takes hot end temperature value as input and returns corresponding analog value from RepRap thermistor temp table.
@@ -1084,10 +1138,10 @@ inline void kill(byte debug)
   if(HEATER_0_PIN > -1) digitalWrite(HEATER_0_PIN,LOW);
   if(HEATER_1_PIN > -1) digitalWrite(HEATER_1_PIN,LOW);
   
-  disable_x;
-  disable_y;
-  disable_z;
-  disable_e;
+  disable_x();
+  disable_y();
+  disable_z();
+  disable_e();
   
   if(PS_ON_PIN > -1) pinMode(PS_ON_PIN,INPUT);
   
