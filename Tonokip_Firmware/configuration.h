@@ -11,9 +11,9 @@
 //Acceleration settings
 float full_velocity_units = 1.5; // the units between minimum and G1 move feedrate
 float min_units_per_second = 30.0; // the minimum feedrate
+float min_constant_speed_units = 0.6; // the minimum units of an accelerated move that must be done at constant speed
 
-// THERMOCOUPLE SUPPORT UNTESTED... USE WITH CAUTION!!!!
-const bool USE_THERMISTOR = true; //Set to false if using thermocouple
+// AD595 THERMOCOUPLE SUPPORT UNTESTED... USE WITH CAUTION!!!!
 
 //PID settings:
 //Uncomment the following line to enable PID support. This is untested and could be disastrous. Be careful.
@@ -26,6 +26,14 @@ const bool USE_THERMISTOR = true; //Set to false if using thermocouple
 #define PID_DGAIN 100 //100 is 1.0
 #endif
 
+// Select one of these only to define how the nozzle temp is read.
+#define HEATER_USES_THERMISTOR
+//#define HEATER_USES_AD595
+//#define HEATER_USES_MAX6675
+
+// Select one of these only to define how the bed temp is read.
+#define BED_USES_THERMISTOR
+//#define BED_USES_AD595
 
 // Calibration formulas
 // e_extruded_steps_per_mm = e_feedstock_steps_per_mm * (desired_extrusion_diameter^2 / feedstock_diameter^2)

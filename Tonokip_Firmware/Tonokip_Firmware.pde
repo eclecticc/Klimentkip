@@ -52,10 +52,12 @@ bool direction_x, direction_y, direction_z, direction_e;
 unsigned long previous_micros=0, previous_micros_x=0, previous_micros_y=0, previous_micros_z=0, previous_micros_e=0, previous_millis_heater, previous_millis_bed_heater;
 unsigned long x_steps_to_take, y_steps_to_take, z_steps_to_take, e_steps_to_take;
 unsigned long long_full_velocity_units = full_velocity_units * 100;
-unsigned long max_x_interval = 1000000.0 / (min_units_per_second * x_steps_per_unit);
-unsigned long max_y_interval = 1000000.0 / (min_units_per_second * y_steps_per_unit);
-unsigned long max_interval;
-boolean acceleration_enabled;
+unsigned long max_x_interval = 100000000.0 / (min_units_per_second * x_steps_per_unit);
+unsigned long max_y_interval = 100000000.0 / (min_units_per_second * y_steps_per_unit);
+unsigned long max_interval, interval;
+unsigned long x_min_constant_speed_steps = min_constant_speed_units * x_steps_per_unit,
+  y_min_constant_speed_steps = min_constant_speed_units * y_steps_per_unit, min_constant_speed_steps;
+boolean acceleration_enabled,accelerating;
 float destination_x =0.0, destination_y = 0.0, destination_z = 0.0, destination_e = 0.0;
 float current_x = 0.0, current_y = 0.0, current_z = 0.0, current_e = 0.0;
 long x_interval, y_interval, z_interval, e_interval; // for speed delay
@@ -81,11 +83,14 @@ int serial_count = 0;
 boolean comment_mode = false;
 char *strchr_pointer; // just a pointer to find chars in the cmd string like X, Y, Z, E, etc
 
-//manage heater variables
+// Manage heater variables. For a thermistor or AD595 thermocouple, raw values refer to the 
+// reading from the analog pin. For a MAX6675 thermocouple, the raw value is the temperature in 0.25 
+// degree increments (i.e. 100=25 deg). 
+
 int target_raw = 0;
-int current_raw;
+int current_raw =0;
 int target_bed_raw = 0;
-int current_bed_raw;
+int current_bed_raw=0;
 float tt=0,bt=0;
 #ifdef PIDTEMP
 int temp_iState=0;
@@ -200,6 +205,19 @@ void setup()
 
   if(HEATER_0_PIN > -1) pinMode(HEATER_0_PIN,OUTPUT);
   
+#ifdef HEATER_USES_MAX6675
+  digitalWrite(SCK_PIN,0);
+  pinMode(SCK_PIN,OUTPUT);
+
+  digitalWrite(MOSI_PIN,1);
+  pinMode(MOSI_PIN,OUTPUT);
+
+  digitalWrite(MISO_PIN,1);
+  pinMode(MISO_PIN,INPUT);
+
+  digitalWrite(MAX6675_SS,1);
+  pinMode(MAX6675_SS,OUTPUT);
+#endif  
  
 #ifdef SDSUPPORT
 
@@ -436,10 +454,10 @@ inline void process_commands()
         time_for_move = max(time_for_move,Z_TIME_FOR_MOVE);
         if(time_for_move <= 0) time_for_move = max(time_for_move,E_TIME_FOR_MOVE);
 
-        if(x_steps_to_take) x_interval = time_for_move/x_steps_to_take;
-        if(y_steps_to_take) y_interval = time_for_move/y_steps_to_take;
-        if(z_steps_to_take) z_interval = time_for_move/z_steps_to_take;
-        if(e_steps_to_take && (x_steps_to_take + y_steps_to_take <= 0)) e_interval = time_for_move/e_steps_to_take;
+        if(x_steps_to_take) x_interval = time_for_move/x_steps_to_take*100;
+        if(y_steps_to_take) y_interval = time_for_move/y_steps_to_take*100;
+        if(z_steps_to_take) z_interval = time_for_move/z_steps_to_take*100;
+        if(e_steps_to_take && (x_steps_to_take + y_steps_to_take <= 0)) e_interval = time_for_move/e_steps_to_take*100;
         
         //#define DEBUGGING false
 	#if 0        
@@ -600,25 +618,24 @@ inline void process_commands()
         if (code_seen('S')) target_bed_raw = temp2analogBed(code_value());
         break;
       case 105: // M105
-        #if TEMP_0_PIN>-1
-        tt=analog2temp(analogRead(TEMP_0_PIN));
+        #if (TEMP_0_PIN>-1) || defined (HEATER_USES_MAX6675)
+          tt=analog2temp(current_raw);
         #endif
         #if TEMP_1_PIN>-1
-        bt=analog2tempBed(analogRead(TEMP_1_PIN));
+          bt=analog2tempBed(current_bed_raw);
         #endif
-        #if TEMP_0_PIN>-1
+        #if (TEMP_0_PIN>-1) || defined (HEATER_USES_MAX6675)
+          Serial.print("T:");
+          Serial.println(tt); 
+          #if TEMP_1_PIN>-1
         
-        Serial.print("T:");
-        Serial.println(tt); 
-        #if TEMP_1_PIN>-1
-        
-        Serial.print("ok T:");
-        Serial.print(tt); 
-        Serial.print(" B:");
-        Serial.println(bt); 
-        #endif
+            Serial.print("ok T:");
+            Serial.print(tt); 
+            Serial.print(" B:");
+            Serial.println(bt); 
+          #endif
         #else
-        Serial.println("No thermistors - no temp");
+          Serial.println("No thermistors - no temp");
         #endif
         return;
         //break;
@@ -629,7 +646,7 @@ inline void process_commands()
           if( (millis()-previous_millis_heater) > 1000 ) //Print Temp Reading every 1 second while heating up.
           {
             Serial.print("T:");
-            Serial.println( analog2temp(analogRead(TEMP_0_PIN)) ); 
+            Serial.println( analog2temp(current_raw) ); 
             previous_millis_heater = millis(); 
           }
           manage_heater();
@@ -774,6 +791,7 @@ void linear_move(unsigned long x_steps_remaining, unsigned long y_steps_remainin
   
   previous_millis_heater = millis();
   
+  //Define variables that are needed for the Bresenham algorithm. Please note that  Z is not currently included in the Bresenham algorithm.
   unsigned long start_move_micros = micros(); 
   unsigned int delta_x = x_steps_remaining;
   unsigned long x_interval_nanos;
@@ -781,7 +799,6 @@ void linear_move(unsigned long x_steps_remaining, unsigned long y_steps_remainin
   unsigned long y_interval_nanos;
   unsigned int delta_z = z_steps_remaining;
   unsigned long z_interval_nanos;
-  long interval;
   boolean steep_y = delta_y > delta_x;// && delta_y > delta_e && delta_y > delta_z;
   boolean steep_x = delta_x >= delta_y;// && delta_x > delta_e && delta_x > delta_z;
   //boolean steep_z = delta_z > delta_x && delta_z > delta_y && delta_z > delta_e;
@@ -793,34 +810,47 @@ void linear_move(unsigned long x_steps_remaining, unsigned long y_steps_remainin
   unsigned long steps_remaining;
   unsigned long steps_to_take;
   
+  //Do some Bresenham calculations depending on which axis will lead it.
   if(steep_y) {
    error_x = delta_y / 2;
-   previous_micros_y=micros();
+   previous_micros_y=micros()*100;
    interval = y_interval;
    virtual_full_velocity_steps = long_full_velocity_units * y_steps_per_unit /100;
-   full_velocity_steps = min(virtual_full_velocity_steps, delta_y / 2);
+   full_velocity_steps = min(virtual_full_velocity_steps, (delta_y - y_min_constant_speed_steps) / 2);
    steps_remaining = delta_y;
    steps_to_take = delta_y;
    max_interval = max_y_interval;
+   min_constant_speed_steps = y_min_constant_speed_steps;
   } else if (steep_x) {
    error_y = delta_x / 2;
-   previous_micros_x=micros();
+   previous_micros_x=micros()*100;
    interval = x_interval;
    virtual_full_velocity_steps = long_full_velocity_units * x_steps_per_unit /100;
-   full_velocity_steps = min(virtual_full_velocity_steps, delta_x / 2);
+   full_velocity_steps = min(virtual_full_velocity_steps, (delta_x - x_min_constant_speed_steps) / 2);
    steps_remaining = delta_x;
    steps_to_take = delta_x;
    max_interval = max_x_interval;
+   min_constant_speed_steps = x_min_constant_speed_steps;
   }
+  previous_micros_z=micros()*100;
+  previous_micros_e=micros()*100;
   acceleration_enabled = true;
   if(full_velocity_steps == 0) full_velocity_steps++;
   long full_interval = interval;//max(interval, max_interval - ((max_interval - full_interval) * full_velocity_steps / virtual_full_velocity_steps));
   if(interval > max_interval) acceleration_enabled = false;
+  if(min_constant_speed_steps >= steps_to_take) {
+    acceleration_enabled = false;
+    full_interval = max(max_interval, interval); // choose the min speed between feedrate and acceleration start speed
+  }
+  if(full_velocity_steps < virtual_full_velocity_steps && acceleration_enabled) full_interval = max(interval,
+      max_interval - ((max_interval - full_interval) * full_velocity_steps / virtual_full_velocity_steps)); // choose the min speed between feedrate and speed at full steps
   unsigned long steps_done = 0;
   unsigned int steps_acceleration_check = 1;
+  accelerating = acceleration_enabled;
   
-  // move until no more steps remain 
-  while(x_steps_remaining + y_steps_remaining + z_steps_remaining + e_steps_remaining > 0) { 
+  //move until no more steps remain 
+  while(x_steps_remaining + y_steps_remaining + z_steps_remaining + e_steps_remaining > 0) {
+    //If acceleration is enabled on this move and we are in the acceleration segment, calculate the current interval
     if (acceleration_enabled && steps_done < full_velocity_steps && steps_done / full_velocity_steps < 1 && (steps_done % steps_acceleration_check == 0)) {
       if(steps_done == 0) {
         interval = max_interval;
@@ -828,25 +858,27 @@ void linear_move(unsigned long x_steps_remaining, unsigned long y_steps_remainin
         interval = max_interval - ((max_interval - full_interval) * steps_done / virtual_full_velocity_steps);
       }
     } else if (acceleration_enabled && steps_remaining < full_velocity_steps) {
+      //Else, if acceleration is enabled on this move and we are in the deceleration segment, calculate the current interval
       if(steps_remaining == 0) {
         interval = max_interval;
       } else {
         interval = max_interval - ((max_interval - full_interval) * steps_remaining / virtual_full_velocity_steps);
       }
+      accelerating = true;
     } else if (steps_done - full_velocity_steps >= 1 || !acceleration_enabled){
+      //Else, we are just use the full speed interval as current interval
       interval = full_interval;
+      accelerating = false;
     }
-      
-    
-    
-      
+
+    //If there are x or y steps remaining, perform Bresenham algorithm
     if(x_steps_remaining || y_steps_remaining) {
       if(X_MIN_PIN > -1) if(!direction_x) if(digitalRead(X_MIN_PIN) != ENDSTOPS_INVERTING) break;
       if(Y_MIN_PIN > -1) if(!direction_y) if(digitalRead(Y_MIN_PIN) != ENDSTOPS_INVERTING) break;
       if(X_MAX_PIN > -1) if(direction_x) if(digitalRead(X_MAX_PIN) != ENDSTOPS_INVERTING) break;
       if(Y_MAX_PIN > -1) if(direction_y) if(digitalRead(Y_MAX_PIN) != ENDSTOPS_INVERTING) break;
       if(steep_y) {
-        timediff = micros() - previous_micros_y;
+        timediff = micros() * 100 - previous_micros_y;
         while(timediff >= interval && y_steps_remaining>0) {
           steps_done++;
           steps_remaining--;
@@ -859,7 +891,7 @@ void linear_move(unsigned long x_steps_remaining, unsigned long y_steps_remainin
           }
         }
       } else if (steep_x) {
-        timediff=micros() - previous_micros_x;
+        timediff=micros() * 100 - previous_micros_x;
         while(timediff >= interval && x_steps_remaining>0) {
           steps_done++;
           steps_remaining--;
@@ -873,24 +905,30 @@ void linear_move(unsigned long x_steps_remaining, unsigned long y_steps_remainin
         }
       }
     }
-    
+
+    //If there are z steps remaining, check if z steps must be taken
     if(z_steps_remaining) {
       if(Z_MIN_PIN > -1) if(!direction_z) if(digitalRead(Z_MIN_PIN) != ENDSTOPS_INVERTING) break;
       if(Z_MAX_PIN > -1) if(direction_z) if(digitalRead(Z_MAX_PIN) != ENDSTOPS_INVERTING) break;
-      timediff=micros()-previous_micros_z;
+      timediff=micros() * 100-previous_micros_z;
       while(timediff >= z_interval && z_steps_remaining) { do_z_step(); z_steps_remaining--; timediff-=z_interval;}
-    }    
-    
+    }
+
+    //If there are e steps remaining, check if e steps must be taken
     if(e_steps_remaining){
-      if (x_steps_to_take + y_steps_to_take <= 0) timediff=micros()-previous_micros_e;
+      if (x_steps_to_take + y_steps_to_take <= 0) timediff=micros() * 100-previous_micros_e;
       unsigned int final_e_steps_remaining = 0;
       if (steep_x && x_steps_to_take > 0) final_e_steps_remaining = e_steps_to_take * x_steps_remaining / x_steps_to_take;
       else if (steep_y && y_steps_to_take > 0) final_e_steps_remaining = e_steps_to_take * y_steps_remaining / y_steps_to_take;
+      //If this move has X or Y steps, let E follow the Bresenham pace
       if (final_e_steps_remaining > 0)  while(e_steps_remaining > final_e_steps_remaining) { do_e_step(); e_steps_remaining--;}
       else if (x_steps_to_take + y_steps_to_take > 0)  while(e_steps_remaining) { do_e_step(); e_steps_remaining--;}
+      //Else, normally check if e steps must be taken
       else while (timediff >= e_interval && e_steps_remaining) { do_e_step(); e_steps_remaining--; timediff-=e_interval;}
     }
-    if( (millis() - previous_millis_heater) >= 500 ) {
+    
+    //If more that half second is passed since previous heating check, manage it
+    if(!accelerating && (millis() - previous_millis_heater) >= 500 ) {
       manage_heater();
       previous_millis_heater = millis();
       
@@ -918,7 +956,7 @@ void linear_move(unsigned long x_steps_remaining, unsigned long y_steps_remainin
 inline void do_x_step()
 {
   digitalWrite(X_STEP_PIN, HIGH);
-  previous_micros_x = micros();
+  previous_micros_x += interval;
   //delayMicroseconds(3);
   digitalWrite(X_STEP_PIN, LOW);
 }
@@ -926,7 +964,7 @@ inline void do_x_step()
 inline void do_y_step()
 {
   digitalWrite(Y_STEP_PIN, HIGH);
-  previous_micros_y = micros();
+  previous_micros_y += interval;
   //delayMicroseconds(3);
   digitalWrite(Y_STEP_PIN, LOW);
 }
@@ -934,7 +972,7 @@ inline void do_y_step()
 inline void do_z_step()
 {
   digitalWrite(Z_STEP_PIN, HIGH);
-  previous_micros_z = micros();
+  previous_micros_z += z_interval;
   //delayMicroseconds(3);
   digitalWrite(Z_STEP_PIN, LOW);
 }
@@ -942,7 +980,7 @@ inline void do_z_step()
 inline void do_e_step()
 {
   digitalWrite(E_STEP_PIN, HIGH);
-  previous_micros_e = micros();
+  previous_micros_e += e_interval;
   //delayMicroseconds(3);
   digitalWrite(E_STEP_PIN, LOW);
 }
@@ -956,59 +994,133 @@ inline void  enable_y() { if(Y_ENABLE_PIN > -1) digitalWrite(Y_ENABLE_PIN, Y_ENA
 inline void  enable_z() { if(Z_ENABLE_PIN > -1) digitalWrite(Z_ENABLE_PIN, Z_ENABLE_ON); }
 inline void  enable_e() { if(E_ENABLE_PIN > -1) digitalWrite(E_ENABLE_PIN, E_ENABLE_ON); }
 
-inline void manage_heater()
-{
-  #if TEMP_0_PIN > -1
-  current_raw = analogRead(TEMP_0_PIN);                  // If using thermistor, when the heater is colder than targer temp, we get a higher analog reading than target, 
-  if(USE_THERMISTOR) current_raw = 1023 - current_raw;   // this switches it up so that the reading appears lower than target for the control logic.
-  
-  #ifdef PIDTEMP
-    error = target_raw - current_raw;
-    pTerm = (PID_PGAIN * error)/100;
-    temp_iState += error;
-    temp_iState = constrain(temp_iState, temp_iState_min, temp_iState_max);
-    iTerm = (PID_IGAIN * temp_iState) /100;
-    dTerm = (PID_DGAIN * (current_raw - temp_dState))/100;
-    temp_dState = current_raw;
-    analogWrite(HEATER_0_PIN, constrain(pTerm + iTerm - dTerm, 0, PID_MAX));
+#define HEAT_INTERVAL 250
+#ifdef HEATER_USES_MAX6675
+unsigned long max6675_previous_millis = 0;
+int max6675_temp = 2000;
 
-  #else
-  if(current_raw >= target_raw)
-   {
-     digitalWrite(HEATER_0_PIN,LOW);
-     digitalWrite(LED_PIN,LOW);
-   }
+inline int read_max6675()
+{
+  if (millis() - max6675_previous_millis < HEAT_INTERVAL) 
+    return max6675_temp;
+  
+  max6675_previous_millis = millis();
+
+  max6675_temp = 0;
+    
+  #ifdef	PRR
+    PRR &= ~(1<<PRSPI);
+  #elif defined PRR0
+    PRR0 &= ~(1<<PRSPI);
+  #endif
+  
+  SPCR = (1<<MSTR) | (1<<SPE) | (1<<SPR0);
+  
+  // enable TT_MAX6675
+  digitalWrite(MAX6675_SS, 0);
+  
+  // ensure 100ns delay - a bit extra is fine
+  delay(1);
+  
+  // read MSB
+  SPDR = 0;
+  for (;(SPSR & (1<<SPIF)) == 0;);
+  max6675_temp = SPDR;
+  max6675_temp <<= 8;
+  
+  // read LSB
+  SPDR = 0;
+  for (;(SPSR & (1<<SPIF)) == 0;);
+  max6675_temp |= SPDR;
+  
+  // disable TT_MAX6675
+  digitalWrite(MAX6675_SS, 1);
+
+  if (max6675_temp & 4) 
+  {
+    // thermocouple open
+    max6675_temp = 2000;
+  }
   else 
   {
-    digitalWrite(HEATER_0_PIN,HIGH);
-    digitalWrite(LED_PIN,HIGH);
+    max6675_temp = max6675_temp >> 3;
   }
+
+  return max6675_temp;
+}
+#endif
+inline void manage_heater()
+{
+  #ifdef HEATER_USES_THERMISTOR
+    current_raw = analogRead(TEMP_0_PIN); 
+    // When using thermistor, when the heater is colder than targer temp, we get a higher analog reading than target, 
+    // this switches it up so that the reading appears lower than target for the control logic.
+    current_raw = 1023 - current_raw;
+  #elif defined HEATER_USES_AD595
+    current_raw = analogRead(TEMP_0_PIN);    
+  #elif defined HEATER_USES_MAX6675
+    current_raw = read_max6675();
   #endif
+  
+  #if (TEMP_0_PIN > -1) || defined (HEATER_USES_MAX66675)
+    #ifdef PIDTEMP
+      error = target_raw - current_raw;
+      pTerm = (PID_PGAIN * error)/100;
+      temp_iState += error;
+      temp_iState = constrain(temp_iState, temp_iState_min, temp_iState_max);
+      iTerm = (PID_IGAIN * temp_iState) /100;
+      dTerm = (PID_DGAIN * (current_raw - temp_dState))/100;
+      temp_dState = current_raw;
+      analogWrite(HEATER_0_PIN, constrain(pTerm + iTerm - dTerm, 0, PID_MAX));
+    #else
+      if(current_raw >= target_raw)
+      {
+        digitalWrite(HEATER_0_PIN,LOW);
+        digitalWrite(LED_PIN,LOW);
+      }
+      else 
+      {
+        digitalWrite(HEATER_0_PIN,HIGH);
+        digitalWrite(LED_PIN,HIGH);
+      }
+    #endif
   #endif
+  
   if(millis()-previous_millis_bed_heater<5000)
     return;
   previous_millis_bed_heater = millis();
+
+  #ifdef BED_USES_THERMISTOR
+
+    current_bed_raw = analogRead(TEMP_1_PIN);                  
+
+    // If using thermistor, when the heater is colder than targer temp, we get a higher analog reading than target, 
+    // this switches it up so that the reading appears lower than target for the control logic.
+    current_bed_raw = 1023 - current_bed_raw;
+  #elif defined BED_USES_AD595
+    current_bed_raw = analogRead(TEMP_1_PIN);                  
+
+  #endif
   
-    #if TEMP_1_PIN > -1
-  current_bed_raw = analogRead(TEMP_1_PIN);                  // If using thermistor, when the heater is colder than targer temp, we get a higher analog reading than target, 
-  if(USE_THERMISTOR) current_bed_raw = 1023 - current_bed_raw;   // this switches it up so that the reading appears lower than target for the control logic.
-  
-  if(current_bed_raw >= target_bed_raw)
-   {
-     digitalWrite(HEATER_1_PIN,LOW);
-     }
-  else 
-  {
-    digitalWrite(HEATER_1_PIN,HIGH);
+
+  #if TEMP_1_PIN > -1
+    if(current_bed_raw >= target_bed_raw)
+    {
+      digitalWrite(HEATER_1_PIN,LOW);
     }
-    #endif
+    else 
+    {
+      digitalWrite(HEATER_1_PIN,HIGH);
+    }
+  #endif
 }
 
-// Takes hot end temperature value as input and returns corresponding analog value from RepRap thermistor temp table.
+// Takes hot end temperature value as input and returns corresponding raw value. 
+// For a thermistor, it uses the RepRap thermistor temp table.
 // This is needed because PID in hydra firmware hovers around a given analog value, not a temp value.
 // This function is derived from inversing the logic from a portion of getTemperature() in FiveD RepRap firmware.
 float temp2analog(int celsius) {
-  if(USE_THERMISTOR) {
+  #ifdef HEATER_USES_THERMISTOR
     int raw = 0;
     byte i;
     
@@ -1029,16 +1141,20 @@ float temp2analog(int celsius) {
     if (i == NUMTEMPS) raw = temptable[i-1][0];
 
     return 1023 - raw;
-  } else {
-    return celsius * (1024.0/(5.0*100.0));
-  }
+  #elif defined HEATER_USES_AD595
+    return celsius * (1024.0/(5.0 * 100.0));
+  #elif defined HEATER_USES_MAX6675
+    return celsius * 4.0;
+  #endif
 }
 
-// Takes bed temperature value as input and returns corresponding analog value from RepRap thermistor temp table.
+// Takes bed temperature value as input and returns corresponding raw value. 
+// For a thermistor, it uses the RepRap thermistor temp table.
 // This is needed because PID in hydra firmware hovers around a given analog value, not a temp value.
 // This function is derived from inversing the logic from a portion of getTemperature() in FiveD RepRap firmware.
 float temp2analogBed(int celsius) {
-  if(USE_THERMISTOR) {
+  #ifdef BED_USES_THERMISTOR
+
     int raw = 0;
     byte i;
     
@@ -1059,17 +1175,19 @@ float temp2analogBed(int celsius) {
     if (i == BNUMTEMPS) raw = bedtemptable[i-1][0];
 
     return 1023 - raw;
-  } else {
-    return celsius * (1024.0/(5.0*100.0));
-  }
+  #elif defined BED_USES_AD595
+    return celsius * (1024.0/(5.0 * 100.0));
+  #endif
 }
 
 // Derived from RepRap FiveD extruder::getTemperature()
-// For hot end thermistor.
+// For hot end temperature measurement.
 float analog2temp(int raw) {
-  if(USE_THERMISTOR) {
+  #ifdef HEATER_USES_THERMISTOR
     int celsius = 0;
     byte i;
+    
+    raw = 1023 - raw;
 
     for (i=1; i<NUMTEMPS; i++)
     {
@@ -1088,18 +1206,21 @@ float analog2temp(int raw) {
     if (i == NUMTEMPS) celsius = temptable[i-1][1];
 
     return celsius;
-    
-  } else {
-    return raw * ((5.0*100.0)/1024.0);
-  }
+  #elif defined HEATER_USES_AD595
+    return raw * ((5.0 * 100.0) / 1024.0);
+  #elif defined HEATER_USES_MAX6675
+    return raw * 0.25;
+  #endif
 }
 
 // Derived from RepRap FiveD extruder::getTemperature()
-// For bed thermistor.
+// For bed temperature measurement.
 float analog2tempBed(int raw) {
-  if(USE_THERMISTOR) {
+  #ifdef BED_USES_THERMISTOR
     int celsius = 0;
     byte i;
+
+    raw = 1023 - raw;
 
     for (i=1; i<NUMTEMPS; i++)
     {
@@ -1119,9 +1240,9 @@ float analog2tempBed(int raw) {
 
     return celsius;
     
-  } else {
+  #elif defined BED_USES_AD595
     return raw * ((5.0*100.0)/1024.0);
-  }
+  #endif
 }
 
 inline void kill(byte debug)
